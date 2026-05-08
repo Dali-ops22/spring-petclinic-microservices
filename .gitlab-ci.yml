@@ -70,3 +70,12 @@ package_job:
       --batch-mode --errors --fail-at-end --show-version -DinstallAtEnd=true -DdeployAtEnd=true
     - docker compose build
     - docker compose push
+package_job:
+  stage: package
+  image: docker:stable
+  services:
+    - docker:dind
+  privileged: true
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
