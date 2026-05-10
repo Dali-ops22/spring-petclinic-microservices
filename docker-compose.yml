@@ -6,13 +6,15 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     healthcheck:
       test: ["CMD", "curl", "-I", "http://config-server:8888"]
       interval: 5s
       timeout: 5s
       retries: 10
     ports:
-     - 8888:8888
+      - 8888:8888
 
   discovery-server:
     image: springcommunity/spring-petclinic-discovery-server
@@ -21,8 +23,10 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://discovery-server:8761"]
+      test: ["CMD", "curl", "-f", "http://discovery-server:8761/actuator/health"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -30,7 +34,7 @@ services:
       config-server:
         condition: service_healthy
     ports:
-     - 8761:8761
+      - 8761:8761
 
   customers-service:
     image: springcommunity/spring-petclinic-customers-service
@@ -39,13 +43,15 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     depends_on:
       config-server:
         condition: service_healthy
       discovery-server:
         condition: service_healthy
     ports:
-    - 8081:8081
+      - 8081:8081
 
   visits-service:
     image: springcommunity/spring-petclinic-visits-service
@@ -54,13 +60,15 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     depends_on:
       config-server:
         condition: service_healthy
       discovery-server:
         condition: service_healthy
     ports:
-     - 8082:8082
+      - 8082:8082
 
   vets-service:
     image: springcommunity/spring-petclinic-vets-service
@@ -69,34 +77,15 @@ services:
       resources:
         limits:
           memory: 512M
-    depends_on:
-      config-server:
-        condition: service_healthy
-      discovery-server:
-        condition: service_healthy
-    ports:
-     - 8083:8083
-
-
-  genai-service:
-    image: springcommunity/spring-petclinic-genai-service
-    container_name: genai-service
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
-      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
-    deploy:
-      resources:
-        limits:
-          memory: 512M
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     depends_on:
       config-server:
         condition: service_healthy
       discovery-server:
         condition: service_healthy
     ports:
-     - 8084:8084
-
+      - 8083:8083
 
   api-gateway:
     image: springcommunity/spring-petclinic-api-gateway
@@ -105,23 +94,15 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     depends_on:
       config-server:
         condition: service_healthy
       discovery-server:
         condition: service_healthy
     ports:
-     - 8080:8080
-
-  tracing-server:
-    image: openzipkin/zipkin
-    container_name: tracing-server
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    ports:
-     - 9411:9411
+      - 8080:8080
 
   admin-server:
     image: springcommunity/spring-petclinic-admin-server
@@ -130,32 +111,12 @@ services:
       resources:
         limits:
           memory: 512M
+    environment:
+      - JAVA_TOOL_OPTIONS=-Xmx384m -Xms128m
     depends_on:
       config-server:
         condition: service_healthy
       discovery-server:
         condition: service_healthy
     ports:
-     - 9090:9090
-
-  ## Grafana / Prometheus
-
-  grafana-server:
-    build: ./docker/grafana
-    container_name: grafana-server
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-    ports:
-    - 3030:3000
-
-  prometheus-server:
-    build: ./docker/prometheus
-    container_name: prometheus-server
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-    ports:
-    - 9091:9090
+      - 9090:9090
