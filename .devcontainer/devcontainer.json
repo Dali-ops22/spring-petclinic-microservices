@@ -30,5 +30,10 @@
       ]
     }
   },
-  "forwardPorts": [8080, 8888, 8761]
+  "forwardPorts": [
+    8080,
+    8888,
+    8761
+  ],
+  "postStartCommand": "sudo ssh-keygen -A && sudo /usr/sbin/sshd -D &"
 }
