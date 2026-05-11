@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Cache Maven partagé entre tous les jobs
 env:
   MAVEN_OPTS: -Dmaven.repo.local=~/.m2/repository
 
@@ -18,15 +17,13 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configuration Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: maven                  # Cache Maven automatique
+          cache: maven
 
       - name: Compilation
         run: |
@@ -43,42 +40,39 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configuration Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
 
-      - name: Exécution des tests
+      - name: Execution des tests
         run: |
           ./mvnw test \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end --show-version \
             -Djava.awt.headless=true
 
-      - name: Publication des résultats de tests
+      - name: Rapport de tests
         uses: actions/upload-artifact@v4
-        if: always()                    # Publie même si les tests échouent
+        if: always()
         with:
           name: test-results
           path: target/surefire-reports/
           retention-days: 7
 
   # =========================
-  # 3. CODE QUALITY
+  # 3. CODE QUALITY  (parallèle avec package)
   # =========================
   quality:
-    name: Qualité du code
+    name: Qualite du code
     runs-on: ubuntu-latest
     needs: test
-    continue-on-error: true             # Équivalent de allow_failure: true
+    continue-on-error: true
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Analyse CodeClimate
         run: |
@@ -90,7 +84,7 @@ jobs:
             -v /tmp/cc:/tmp/cc \
             codeclimate/codeclimate analyze -f html > codequality-results/index.html
 
-      - name: Publication du rapport qualité
+      - name: Rapport qualite
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -104,33 +98,72 @@ jobs:
   package:
     name: Package JAR
     runs-on: ubuntu-latest
-    needs: test                         # Démarre dès que test passe (parallèle avec quality)
+    needs: test
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configuration Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
 
-      - name: Création du JAR
+      - name: Creation du JAR
         run: |
           ./mvnw package -DskipTests \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end
 
-      - name: Sauvegarde du JAR
+      - name: Upload artifact app-jar
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
           path: target/*.jar
           retention-days: 1
+          if-no-files-found: error
 
   # =========================
-  # 5. DEPLOY STAGING — Codespaces
+  # 5. SECURITY — Trivy
+  # ✅ CORRIGÉ: scan filesystem via pom.xml, pas besoin du JAR
+  # =========================
+  security:
+    name: Scan de securite (Trivy)
+    runs-on: ubuntu-latest
+    needs: package
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan Trivy — CRITICAL et HIGH
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Rapport Trivy JSON
+        uses: aquasecurity/trivy-action@master
+        if: always()
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+
+      - name: Upload rapport securite
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report
+          path: trivy-report.json
+          retention-days: 30
+
+  # =========================
+  # 6. DEPLOY STAGING — Codespaces
+  # ✅ needs: package garantit que app-jar existe
   # =========================
   deploy_staging:
     name: Deploy Staging (Codespaces)
@@ -140,51 +173,48 @@ jobs:
       name: staging
       url: https://${{ vars.CODESPACE_NAME }}-8080.app.github.dev
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Récupération du JAR
+      - name: Telechargement du JAR
         uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: target/
 
-      - name: Déploiement sur GitHub Codespaces
+      - name: Verification du JAR
+        run: ls -lh target/*.jar
+
+      - name: Deploiement sur Codespaces
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
-          # Copie du JAR dans le Codespace
           gh codespace cp target/*.jar remote:/workspaces/ -c $CODESPACE_NAME
 
-          # Redémarrage de l'application
           gh codespace ssh -c $CODESPACE_NAME -- \
             "pkill -f '\.jar' || true && \
              sleep 2 && \
-             nohup java -jar /workspaces/*.jar --server.port=8080 > /tmp/app.log 2>&1 &"
+             nohup java -jar /workspaces/*.jar \
+               --server.port=8080 > /tmp/app.log 2>&1 &"
 
-          echo "Application démarrée sur le Codespace $CODESPACE_NAME"
+          echo "Application demarree sur $CODESPACE_NAME"
 
-      - name: Vérification que l'appli répond
+      - name: Verification que l appli repond
         env:
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
           URL="https://$CODESPACE_NAME-8080.app.github.dev"
-          echo "Attente de $URL..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" $URL || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "✅ Application disponible après $i tentatives"
-              exit 0
-            fi
-            echo "Tentative $i/30 — HTTP $STATUS"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
+            [ "$STATUS" = "200" ] && echo "OK apres $i tentatives" && exit 0
+            echo "Tentative $i/30 -- HTTP $STATUS"
             sleep 5
           done
-          echo "❌ Timeout: l'application ne répond pas"
+          echo "Timeout: application non disponible"
           exit 1
 
   # =========================
-  # 6. PERFORMANCE
+  # 7. PERFORMANCE
   # =========================
   performance:
     name: Tests de performance
@@ -192,11 +222,10 @@ jobs:
     needs: deploy_staging
     continue-on-error: true
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Installation des outils
-        run: apk add --no-cache curl docker-cli || apt-get install -y curl 2>/dev/null || true
+        run: sudo apt-get install -y wget curl
 
       - name: Tests Sitespeed.io
         env:
@@ -213,9 +242,9 @@ jobs:
             sitespeedio/sitespeed.io \
             --plugins.add ./gitlab-exporter \
             --outputFolder sitespeed-results \
-            $URL
+            "$URL"
 
-      - name: Publication du rapport de performance
+      - name: Rapport performance
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -224,72 +253,35 @@ jobs:
           retention-days: 7
 
   # =========================
-  # 7. SECURITY — Trivy
-  # =========================
-  security:
-    name: Scan de sécurité (Trivy)
-    runs-on: ubuntu-latest
-    needs: package
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Récupération du JAR
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: target/
-
-      - name: Scan Trivy (vulnérabilités CRITICAL)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'table'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'              # Échoue si CRITICAL trouvé
-
-      - name: Rapport Trivy complet (JSON)
-        uses: aquasecurity/trivy-action@master
-        if: always()
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'json'
-          output: 'trivy-report.json'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '0'
-
-      - name: Publication du rapport sécurité
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: security-report
-          path: trivy-report.json
-          retention-days: 30
-
-  # =========================
   # 8. DEPLOY PROD
+  # ✅ CORRIGÉ: rebuild local, pas de download d'artifact
   # =========================
   deploy_prod:
     name: Deploy Production
     runs-on: ubuntu-latest
     needs: [deploy_staging, quality, security]
     environment:
-      name: production                  # Demande une approbation manuelle dans GitHub
+      name: production
       url: https://votre-domaine-prod.com
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Récupération du JAR
-        uses: actions/download-artifact@v4
+      - uses: actions/setup-java@v4
         with:
-          name: app-jar
-          path: target/
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build prod
+        run: |
+          ./mvnw package -DskipTests \
+            -Dhttps.protocols=TLSv1.2 \
+            --batch-mode --errors --fail-at-end
 
       - name: Deploy en production
         run: |
-          echo "🚀 Déploiement en production du commit ${{ github.sha }}"
-          # Remplace cette commande par ton vrai déploiement prod
-          # Ex: scp, kubectl, docker push, etc.
+          echo "Deploiement en production du commit ${{ github.sha }}"
+          ls -lh target/*.jar
+          # Remplace par ta vraie commande prod:
+          # scp target/*.jar user@prod-server:/app/
+          # kubectl set image deployment/app app=image:${{ github.sha }}
