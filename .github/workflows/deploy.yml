@@ -150,7 +150,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # gh codespace ssh pipe - pas de exec ni cp
+  # SSH avec clé privée stockée dans les secrets
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -193,30 +193,49 @@ jobs:
           echo "Codespace cible : $RESOLVED"
           echo "name=$RESOLVED" >> "$GITHUB_OUTPUT"
 
-      - name: Deploiement sur Codespaces
+      - name: Configuration SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/actions_key
+          chmod 600 ~/.ssh/actions_key
+          ssh-keyscan -p 2222 -H localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploiement via SSH direct
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           RESOLVED: ${{ steps.resolve.outputs.name }}
         run: |
           export GH_TOKEN=$GH_TOKEN
 
-          SCRIPT=$(printf '%s\n' \
-            'set -e' \
-            'cd /workspaces/spring-petclinic-microservices' \
-            'git pull origin main' \
-            './mvnw package -DskipTests -q' \
-            'pkill -f "\.jar" 2>/dev/null || true' \
-            'sleep 2' \
-            'JAR=$(find . -name "*.jar" -not -path "*/.m2/*" -not -name "*sources*" -not -name "*javadoc*" | head -1)' \
-            '[ -z "$JAR" ] && echo "Aucun JAR trouve" && exit 1' \
-            'echo "Demarrage : $JAR"' \
-            'nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &' \
-            'sleep 5' \
-            'pgrep -f "\.jar" && echo "Application demarree OK" || (tail -20 /tmp/app.log && exit 1)' \
-            | base64 -w 0)
+          # Recuperation du host SSH du Codespace via API
+          CS_HOST=$(curl -sf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/codespaces/$RESOLVED" \
+            | grep -o '"connection":{[^}]*}' \
+            | grep -o '"ssh_gateway":"[^"]*"' \
+            | cut -d'"' -f4)
 
-          echo "Deploiement via gh codespace ssh..."
-          echo "$SCRIPT" | base64 -d | gh codespace ssh -c "$RESOLVED" -- bash
+          echo "Host Codespace : $CS_HOST"
+
+          ssh -i ~/.ssh/actions_key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -p 2222 \
+            "vscode@$CS_HOST" \
+            'set -e
+            cd /workspaces/spring-petclinic-microservices
+            git pull origin main
+            ./mvnw package -DskipTests -q
+            pkill -f "\.jar" 2>/dev/null || true
+            sleep 2
+            JAR=$(find . -name "*.jar" -not -path "*/.m2/*" -not -name "*sources*" -not -name "*javadoc*" | head -1)
+            [ -z "$JAR" ] && echo "Aucun JAR" && exit 1
+            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+            sleep 5
+            pgrep -f "\.jar" && echo "OK" || (tail -20 /tmp/app.log && exit 1)'
 
       - name: Verification que l appli repond
         run: |
@@ -294,6 +313,3 @@ jobs:
         run: |
           echo "Deploiement en production du commit ${{ github.sha }}"
           find . -name "*.jar" -not -path "*/.m2/*" | sort
-          # Remplace par ta vraie commande prod :
-          # scp */target/*.jar user@prod-server:/app/
-          # kubectl set image deployment/app app=image:${{ github.sha }}
