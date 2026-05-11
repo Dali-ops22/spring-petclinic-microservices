@@ -138,7 +138,7 @@ jobs:
     needs: package
     environment:
       name: staging
-      url: https://${{ secrets.CODESPACE_NAME }}-8080.app.github.dev
+      url: https://${{ vars.CODESPACE_NAME }}-8080.app.github.dev
     steps:
       - name: Checkout du code
         uses: actions/checkout@v4
