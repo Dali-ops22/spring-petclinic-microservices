@@ -9,6 +9,9 @@
     "ghcr.io/devcontainers/features/java:1": {
       "version": "17",
       "installMaven": "true"
+    },
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
     }
   },
   "customizations": {
@@ -20,5 +23,7 @@
       ]
     }
   },
-  "remoteUser": "vscode"
+  "postStartCommand": "sudo service ssh start || sudo /usr/sbin/sshd",
+  "remoteUser": "vscode",
+  "forwardPorts": [8080, 8888, 8761]
 }
