@@ -166,10 +166,9 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # CORRECTIF FINAL : abandon de gh codespace cp
-  # qui utilise SSH en interne. On passe par
-  # l'API REST GitHub Codespaces pour tout faire
-  # sans SSH : upload des JARs + exec commandes.
+  # SSH est maintenant permanent grâce à sshd
+  # dans devcontainer.json (feature + postStartCommand).
+  # gh codespace cp et gh codespace ssh fonctionnent.
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -190,7 +189,7 @@ jobs:
       - name: Liste des JARs telecharges
         run: find jars/ -name "*.jar" | sort
 
-      - name: Deploiement sur Codespaces via API REST
+      - name: Deploiement sur Codespaces
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CS_NAME: ${{ secrets.CODESPACE_NAME }}
@@ -209,14 +208,15 @@ jobs:
 
           if [ -z "$RESOLVED" ]; then
             echo "❌ Impossible de trouver un Codespace actif."
+            echo "  • Vérifie que GH_TOKEN a le scope 'codespace'"
+            echo "  • Vérifie que le Codespace est actif sur https://github.com/codespaces"
             exit 1
           fi
 
           echo "✅ Codespace cible : $RESOLVED"
+          export GH_TOKEN=$GH_TOKEN
 
-          # ── Étape 2 : upload des JARs via API REST ─────────────────────────
-          # L'API /contenteditor permet d'écrire des fichiers dans le Codespace
-          # sans SSH, en encodant le contenu en base64.
+          # ── Étape 2 : copie des JARs ───────────────────────────────────────
           mapfile -t JARS < <(find jars/ -name "*.jar" | sort)
 
           if [ ${#JARS[@]} -eq 0 ]; then
@@ -226,38 +226,33 @@ jobs:
 
           for jar in "${JARS[@]}"; do
             BASENAME=$(basename "$jar")
-            echo "📦 Upload : $BASENAME"
-            B64=$(base64 -w 0 "$jar")
-            PAYLOAD=$(printf '{"content":"%s","encoding":"base64","path":"/workspaces/%s"}' "$B64" "$BASENAME")
-            HTTP_STATUS=$(curl -s -o /tmp/upload_response.json -w "%{http_code}" \
-              -X PUT \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD" \
-              "https://api.github.com/user/codespaces/$RESOLVED/files")
-            if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
-              echo "⚠️  API fichiers non disponible (HTTP $HTTP_STATUS) — tentative via port-forward..."
-              # Fallback : on place le JAR dans le repo comme ressource téléchargeable
-              # et on demande au Codespace de le télécharger lui-même
-              break
-            fi
-            echo "✅ $BASENAME uploadé"
+            echo "📦 Copie : $jar → remote:/workspaces/$BASENAME"
+            gh codespace cp "$jar" "remote:/workspaces/$BASENAME" --codespace "$RESOLVED"
           done
 
-          # ── Étape 3 : exécution de commandes via API ───────────────────────
-          # On utilise l'endpoint machine pour envoyer des commandes shell
-          echo "🚀 Démarrage de l'application via API GitHub Codespaces..."
+          echo "✅ Tous les JARs copiés."
 
-          COMMAND='pkill -f "\.jar" 2>/dev/null || true; sleep 2; JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1); if [ -z "$JAR" ]; then echo NOJ; exit 1; fi; nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 & sleep 3; pgrep -f jar && echo STARTED || (tail -20 /tmp/app.log; exit 1)'
-
-          curl -sf \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            -d "{\"command\":\"$COMMAND\"}" \
-            "https://api.github.com/user/codespaces/$RESOLVED/machine" || true
+          # ── Étape 3 : démarrage de l'application ──────────────────────────
+          gh codespace ssh --codespace "$RESOLVED" -- bash -s << 'ENDSSH'
+            echo "🔄 Arrêt application existante..."
+            pkill -f "\.jar" 2>/dev/null || true
+            sleep 2
+            JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
+            if [ -z "$JAR" ]; then
+              echo "❌ Aucun JAR dans /workspaces/"
+              exit 1
+            fi
+            echo "🚀 Démarrage : $JAR"
+            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+            sleep 3
+            if pgrep -f "\.jar" > /dev/null; then
+              echo "✅ Application démarrée"
+            else
+              echo "❌ Echec. Log :"
+              tail -30 /tmp/app.log
+              exit 1
+            fi
+          ENDSSH
 
           echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
