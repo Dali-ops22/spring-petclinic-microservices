@@ -6,15 +6,14 @@
   "features": {
     "ghcr.io/devcontainers/features/java:1": {
       "installMaven": "true",
-      "installGradle": "false"
+      "version": "17" 
     },
-    "ghcr.io/devcontainers/features/azure-cli:1": {},
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
-    "ghcr.io/devcontainers/features/sshd:1": {
-      "version": "latest"
-    }
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+        "version": "latest",
+        "enableNonRootDocker": "true"
+    },
+    "ghcr.io/devcontainers/features/azure-cli:1": {}
   },
-  "postStartCommand": "/usr/sbin/sshd -D &",
   "customizations": {
     "vscode": {
       "settings": {
@@ -23,18 +22,13 @@
       "extensions": [
         "vscjava.vscode-java-pack",
         "vscjava.vscode-maven",
-        "github.vscode-github-actions",
-        "github.vscode-pull-request-github",
-        "redhat.vscode-xml",
         "vmware.vscode-boot-dev-pack",
+        "redhat.vscode-xml",
         "mhutchie.git-graph"
       ]
     }
   },
-  "forwardPorts": [
-    8080,
-    8888,
-    8761
-  ],
-  "postStartCommand": "sudo ssh-keygen -A && sudo /usr/sbin/sshd -D &"
+  "forwardPorts": [8080, 8888, 8761, 9090],
+  "postCreateCommand": "mvn clean install -DskipTests",
+  "remoteUser": "vscode"
 }
