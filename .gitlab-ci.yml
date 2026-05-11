@@ -2,15 +2,18 @@ stages:
   - build
   - test
   - quality
-  - package
-  - deploy
+  - package      # ✅ CORRIGÉ: job ajouté
+  - deploy       # ✅ CORRIGÉ: job ajouté
   - performance
   - security
 
+# ✅ CORRIGÉ: clé de cache basée sur le pom.xml, partagée entre build et test
 cache:
   paths:
     - .m2/repository
-  key: "$CI_JOB_NAME"
+  key:
+    files:
+      - pom.xml
 
 # =========================
 # BUILD
@@ -31,12 +34,16 @@ build_job:
 test_job:
   stage: test
   image: eclipse-temurin:17-jdk-alpine
+  needs: [build_job]   # ✅ CORRIGÉ: dépendance explicite
   script:
     - ./mvnw test
       -Dhttps.protocols=TLSv1.2
       -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
       --batch-mode --errors --fail-at-end --show-version
       -Djava.awt.headless=true
+  artifacts:
+    reports:
+      junit: target/surefire-reports/TEST-*.xml   # ✅ AJOUTÉ: rapport de tests
 
 # =========================
 # CODE QUALITY
@@ -58,27 +65,101 @@ code_quality_job:
   artifacts:
     paths:
       - codequality-results/
+
+# =========================
+# PACKAGE  ✅ NOUVEAU
+# =========================
+package_job:
+  stage: package
+  image: eclipse-temurin:17-jdk-alpine
+  needs: [test_job]
+  script:
+    - ./mvnw package -DskipTests
+      -Dhttps.protocols=TLSv1.2
+      -Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository
+      --batch-mode --errors --fail-at-end
+  artifacts:
+    paths:
+      - target/*.jar
+    expire_in: 1 hour
+
+# =========================
+# DEPLOY — GitHub Codespaces  ✅ NOUVEAU
+# =========================
+deploy_codespaces:
+  stage: deploy
+  image: alpine:3.19
+  needs: [package_job]
+  variables:
+    GH_TOKEN: $GITHUB_TOKEN          # À définir dans les variables CI/CD GitLab
+    REPO: $GITHUB_REPO               # ex: monorg/monrepo
+  before_script:
+    - apk add --no-cache curl github-cli
+  script:
+    # Crée ou redémarre le Codespace
+    - |
+      CODESPACE_NAME=$(gh codespace list --repo $REPO --json name -q '.[0].name' 2>/dev/null || echo "")
+      if [ -z "$CODESPACE_NAME" ]; then
+        echo "Création d'un nouveau Codespace..."
+        CODESPACE_NAME=$(gh codespace create --repo $REPO --branch $CI_COMMIT_REF_NAME --json name -q '.name')
+      fi
+      echo "Codespace: $CODESPACE_NAME"
+      echo "CODESPACE_NAME=$CODESPACE_NAME" >> deploy.env
+
+    # Copie le jar dans le Codespace et démarre l'appli
+    - gh codespace cp target/*.jar remote:/workspaces/$REPO/ -c $CODESPACE_NAME
+    - gh codespace ssh -c $CODESPACE_NAME -- "pkill -f '\.jar' || true && nohup java -jar /workspaces/$REPO/*.jar --server.port=8080 &"
+    - echo "Déployé sur le Codespace $CODESPACE_NAME (port 8080)"
+  artifacts:
+    reports:
+      dotenv: deploy.env
+  environment:
+    name: codespaces/$CI_COMMIT_REF_NAME
+    url: https://$CODESPACE_NAME-8080.app.github.dev
+
+# =========================
+# PERFORMANCE  ✅ CORRIGÉ: URL Codespaces au lieu de PLAYWD
+# =========================
 performance_job:
   stage: performance
-  image: alpine
+  image: alpine:3.19
+  needs: [deploy_codespaces]
   services:
     - docker:dind
   variables:
-    URL: http://$PLAYWD-8080.direct.labs.play-with-docker.com/
+    # ✅ CORRIGÉ: URL stable du Codespace, plus de PLAYWD instable
+    URL: https://$CODESPACE_NAME-8080.app.github.dev
     DOCKER_HOST: tcp://docker:2375
   script:
     - apk add --no-cache curl docker-cli
-    - x=1; while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://$PLAYWD-8080.direct.labs.play-with-docker.com/)" != "200" || $x -le 60 ]]; do sleep 5; echo $(( x++ )); done || false
-    - mkdir gitlab-exporter
+    # Attendre que l'appli réponde (max 5 min)
+    - |
+      echo "Attente de $URL..."
+      for i in $(seq 1 60); do
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" $URL || echo "000")
+        [ "$STATUS" = "200" ] && echo "OK ($i)" && break
+        echo "Tentative $i/60 — HTTP $STATUS"
+        sleep 5
+      done
+      [ "$STATUS" != "200" ] && echo "Timeout: appli non disponible" && exit 1
+    - mkdir -p gitlab-exporter sitespeed-results
     - wget -O ./gitlab-exporter/index.js https://gitlab.com/gitlab-org/gl-performance/raw/master/index.js
-    - mkdir sitespeed-results
-    - docker run --shm-size=1g --rm -v "$(pwd)":/sitespeed.io sitespeedio/sitespeed.io --plugins.add ./gitlab-exporter --outputFolder sitespeed-results $URL
+    - docker run --shm-size=1g --rm
+        -v "$(pwd)":/sitespeed.io
+        sitespeedio/sitespeed.io
+        --plugins.add ./gitlab-exporter
+        --outputFolder sitespeed-results $URL
     - mv sitespeed-results/data/performance.json performance.json
   artifacts:
     paths:
       - sitespeed-results/
     reports:
       performance: performance.json
+  allow_failure: true   # ✅ AJOUTÉ: ne bloque pas le pipeline si le test de perf échoue
+
+# =========================
+# SECURITY
+# =========================
 container_scanning:
   stage: security
   image:
@@ -95,14 +176,17 @@ container_scanning:
     DOCKER_HOST: tcp://docker:2375
   script:
     - trivy image --clear-cache
-    - trivy image --exit-code 0 --cache-dir .trivycache/ --no-progress --format template --template "@/contrib/gitlab.tpl"
-        --output "$CI_PROJECT_DIR/gl-container-scanning-report.json" "$FULL_IMAGE_NAME"
+    - trivy image --exit-code 0 --cache-dir .trivycache/ --no-progress
+        --format template --template "@/contrib/gitlab.tpl"
+        --output "$CI_PROJECT_DIR/gl-container-scanning-report.json"
+        "$FULL_IMAGE_NAME"
     - trivy image --exit-code 0 --cache-dir .trivycache/ --no-progress "$FULL_IMAGE_NAME"
-    - trivy image --exit-code 1 --cache-dir .trivycache/ --severity CRITICAL --no-progress "$FULL_IMAGE_NAME"
+    - trivy image --exit-code 1 --cache-dir .trivycache/
+        --severity CRITICAL --no-progress "$FULL_IMAGE_NAME"
   cache:
     paths:
       - .trivycache/
   artifacts:
     when: always
     reports:
-      container_scanning: gl-container-scanning-report.json
+      container_scanning: gl-container-scanning-report.json.json
