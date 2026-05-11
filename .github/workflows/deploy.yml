@@ -200,7 +200,6 @@ jobs:
         run: |
           export GH_TOKEN=$GH_TOKEN
 
-          # Encode le script en base64 pour l'envoyer sans SCP
           SCRIPT=$(printf '%s\n' \
             'set -e' \
             'cd /workspaces/spring-petclinic-microservices' \
@@ -217,7 +216,7 @@ jobs:
             | base64 -w 0)
 
           echo "Envoi du script via gh codespace exec..."
-          gh codespace exec --codespace "$RESOLVED" -- bash -c "echo $SCRIPT | base64 -d | bash"
+          gh codespace exec -c "$RESOLVED" -- bash -c "echo $SCRIPT | base64 -d | bash"
 
       - name: Verification que l appli repond
         run: |
