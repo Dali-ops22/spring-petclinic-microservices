@@ -166,9 +166,9 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # CORRECTIF : remplacement de gh codespace ssh
-  # par gh codespace exec qui ne nécessite pas SSH.
-  # Le Codespace tourne sur Alpine Linux sans sshd.
+  # CORRECTIF YAML : le bloc python3 multiligne
+  # causait une erreur de syntaxe YAML ligne 207.
+  # Remplacé par une commande grep sur une seule ligne.
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -203,20 +203,13 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/user/codespaces" \
-              | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-cs = data.get('codespaces', [])
-print(cs[0]['name'] if cs else '')
-" 2>/dev/null)
+              | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
           fi
 
           if [ -z "$RESOLVED" ]; then
-            echo "──────────────────────────────────────────────────"
             echo "❌ ERREUR : impossible de trouver un Codespace."
             echo "  • Vérifie que GH_TOKEN a le scope 'codespace'"
             echo "  • Vérifie que le Codespace est actif"
-            echo "──────────────────────────────────────────────────"
             exit 1
           fi
 
@@ -234,41 +227,36 @@ print(cs[0]['name'] if cs else '')
           for jar in "${JARS[@]}"; do
             BASENAME=$(basename "$jar")
             echo "📦 Copie : $jar → remote:/workspaces/$BASENAME"
-            gh codespace cp \
-              "$jar" \
-              "remote:/workspaces/$BASENAME" \
-              --codespace "$RESOLVED"
+            gh codespace cp "$jar" "remote:/workspaces/$BASENAME" --codespace "$RESOLVED"
           done
 
           echo "✅ Tous les JARs copiés."
 
-          # ── Étape 3 : démarrage via gh codespace exec ─────────────────────
-          # gh codespace exec passe par le tunnel GitHub CLI (pas SSH direct)
-          gh codespace exec \
-            --codespace "$RESOLVED" \
-            -- bash -c '
-              echo "🔄 Arrêt application existante..."
-              pkill -f "\.jar" 2>/dev/null || true
-              sleep 2
+          # ── Étape 3 : démarrage via script temporaire ─────────────────────
+          # On écrit le script dans un fichier pour éviter les problèmes
+          # de guillemets imbriqués dans le YAML.
+          cat > /tmp/start.sh << 'STARTSCRIPT'
+          pkill -f "\.jar" 2>/dev/null || true
+          sleep 2
+          JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
+          if [ -z "$JAR" ]; then
+            echo "❌ Aucun JAR dans /workspaces/"
+            exit 1
+          fi
+          echo "🚀 Démarrage : $JAR"
+          nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+          sleep 3
+          if pgrep -f "\.jar" > /dev/null; then
+            echo "✅ Application démarrée"
+          else
+            echo "❌ Echec. Log :"
+            tail -30 /tmp/app.log
+            exit 1
+          fi
+          STARTSCRIPT
 
-              JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
-              if [ -z "$JAR" ]; then
-                echo "❌ Aucun JAR dans /workspaces/"
-                exit 1
-              fi
-
-              echo "🚀 Démarrage : $JAR"
-              nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
-              sleep 3
-
-              if pgrep -f "\.jar" > /dev/null; then
-                echo "✅ Application démarrée (PID: $(pgrep -f \.jar))"
-              else
-                echo "❌ Echec du démarrage. Log :"
-                tail -30 /tmp/app.log
-                exit 1
-              fi
-            '
+          gh codespace cp /tmp/start.sh "remote:/tmp/start.sh" --codespace "$RESOLVED"
+          gh codespace exec --codespace "$RESOLVED" -- bash /tmp/start.sh
 
           echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
