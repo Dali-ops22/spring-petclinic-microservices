@@ -178,7 +178,7 @@ jobs:
     needs: package
     environment:
       name: staging
-      url: https://${{ secrets.CODESPACE_NAME }}-8080.app.github.dev
+      url: https://${{ vars.CODESPACE_URL }}-8080.app.github.dev
     steps:
       - uses: actions/checkout@v4
 
