@@ -166,10 +166,9 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # CORRECTIF : suppression du check anticipé qui
-  # bloquait la détection automatique du Codespace.
-  # La résolution se fait désormais en une seule
-  # étape : secret → API GitHub → erreur explicite.
+  # CORRECTIF : remplacement de gh codespace ssh
+  # par gh codespace exec qui ne nécessite pas SSH.
+  # Le Codespace tourne sur Alpine Linux sans sshd.
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -196,9 +195,6 @@ jobs:
           CS_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
           # ── Étape 1 : résolution du nom du Codespace ──────────────────────
-          # Priorité 1 : secret CODESPACE_NAME
-          # Priorité 2 : détection automatique via l'API GitHub
-          # Priorité 3 : échec avec message d'aide clair
           RESOLVED="$CS_NAME"
 
           if [ -z "$RESOLVED" ]; then
@@ -207,33 +203,25 @@ jobs:
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/user/codespaces" \
-              | grep -o '"name":"[^"]*"' \
-              | head -1 \
-              | cut -d'"' -f4)
+              | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+cs = data.get('codespaces', [])
+print(cs[0]['name'] if cs else '')
+" 2>/dev/null)
           fi
 
           if [ -z "$RESOLVED" ]; then
             echo "──────────────────────────────────────────────────"
             echo "❌ ERREUR : impossible de trouver un Codespace."
-            echo ""
-            echo "Causes possibles :"
-            echo "  • Aucun Codespace actif sur votre compte"
-            echo "  • GH_TOKEN manque le scope 'codespace'"
-            echo ""
-            echo "Pour corriger :"
-            echo "  1. Ouvre https://github.com/codespaces"
-            echo "  2. Copie le nom exact de ton Codespace"
-            echo "     (ex: dali-ops22-spring-petclinic-abc123)"
-            echo "  3. Settings > Secrets and variables > Actions"
-            echo "     > New repository secret"
-            echo "     Nom   : CODESPACE_NAME"
-            echo "     Valeur: le nom copié"
-            echo "  4. Vérifie que GH_TOKEN a bien le scope 'codespace'"
+            echo "  • Vérifie que GH_TOKEN a le scope 'codespace'"
+            echo "  • Vérifie que le Codespace est actif"
             echo "──────────────────────────────────────────────────"
             exit 1
           fi
 
           echo "✅ Codespace cible : $RESOLVED"
+          export GH_TOKEN=$GH_TOKEN
 
           # ── Étape 2 : copie des JARs ───────────────────────────────────────
           mapfile -t JARS < <(find jars/ -name "*.jar" | sort)
@@ -244,39 +232,44 @@ jobs:
           fi
 
           for jar in "${JARS[@]}"; do
-            DEST="remote:/workspaces/$(basename "$jar")"
-            echo "📦 Copie : $jar → $DEST"
-            gh codespace cp "$jar" "$DEST" --codespace "$RESOLVED"
+            BASENAME=$(basename "$jar")
+            echo "📦 Copie : $jar → remote:/workspaces/$BASENAME"
+            gh codespace cp \
+              "$jar" \
+              "remote:/workspaces/$BASENAME" \
+              --codespace "$RESOLVED"
           done
 
           echo "✅ Tous les JARs copiés."
 
-          # ── Étape 3 : démarrage de l'application ──────────────────────────
-          gh codespace ssh --codespace "$RESOLVED" -- '
-            echo "Arrêt de l application existante..."
-            pkill -f "\.jar" || true
-            sleep 2
+          # ── Étape 3 : démarrage via gh codespace exec ─────────────────────
+          # gh codespace exec passe par le tunnel GitHub CLI (pas SSH direct)
+          gh codespace exec \
+            --codespace "$RESOLVED" \
+            -- bash -c '
+              echo "🔄 Arrêt application existante..."
+              pkill -f "\.jar" 2>/dev/null || true
+              sleep 2
 
-            JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
-            if [ -z "$JAR" ]; then
-              echo "Aucun JAR dans /workspaces/"
-              exit 1
-            fi
+              JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
+              if [ -z "$JAR" ]; then
+                echo "❌ Aucun JAR dans /workspaces/"
+                exit 1
+              fi
 
-            echo "Démarrage : $JAR"
-            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
-            sleep 2
+              echo "🚀 Démarrage : $JAR"
+              nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+              sleep 3
 
-            if pgrep -f "\.jar" > /dev/null; then
-              echo "✅ Application démarrée (PID: $(pgrep -f '\.jar'))"
-            else
-              echo "❌ Echec du démarrage. Dernières lignes du log :"
-              tail -20 /tmp/app.log
-              exit 1
-            fi
-          '
+              if pgrep -f "\.jar" > /dev/null; then
+                echo "✅ Application démarrée (PID: $(pgrep -f \.jar))"
+              else
+                echo "❌ Echec du démarrage. Log :"
+                tail -30 /tmp/app.log
+                exit 1
+              fi
+            '
 
-          # Rendre le nom disponible aux steps suivants
           echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
       - name: Verification que l appli repond
