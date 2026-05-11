@@ -150,7 +150,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # Script encodé en base64 pour éviter SCP/SSH
+  # gh codespace ssh pipe - pas de exec ni cp
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -215,8 +215,8 @@ jobs:
             'pgrep -f "\.jar" && echo "Application demarree OK" || (tail -20 /tmp/app.log && exit 1)' \
             | base64 -w 0)
 
-          echo "Envoi du script via gh codespace exec..."
-          gh codespace exec -c "$RESOLVED" -- bash -c "echo $SCRIPT | base64 -d | bash"
+          echo "Deploiement via gh codespace ssh..."
+          echo "$SCRIPT" | base64 -d | gh codespace ssh -c "$RESOLVED" -- bash
 
       - name: Verification que l appli repond
         run: |
