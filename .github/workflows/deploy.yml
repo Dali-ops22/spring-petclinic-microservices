@@ -106,11 +106,6 @@ jobs:
             --batch-mode --errors --fail-at-end
       - name: Verification des JARs produits
         run: |
-          echo "JARs trouves:"
-          find . -name "*.jar" \
-            -not -path "*/.m2/*" \
-            -not -name "*sources*" \
-            -not -name "*javadoc*"
           COUNT=$(find . -name "*.jar" \
             -not -path "*/.m2/*" \
             -not -name "*sources*" \
@@ -166,9 +161,11 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
-  # SSH est maintenant permanent grâce à sshd
-  # dans devcontainer.json (feature + postStartCommand).
-  # gh codespace cp et gh codespace ssh fonctionnent.
+  # NOUVELLE APPROCHE : on ne copie plus les JARs
+  # depuis Actions vers le Codespace (SSH bloqué).
+  # On demande au Codespace de faire lui-même :
+  #   git pull + mvn package + java -jar
+  # via l'API REST GitHub Codespaces /api/v1/exec
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -180,16 +177,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Telechargement des JARs
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jars
-          path: jars/
-
-      - name: Liste des JARs telecharges
-        run: find jars/ -name "*.jar" | sort
-
-      - name: Deploiement sur Codespaces
+      - name: Deploiement sur Codespaces via API
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CS_NAME: ${{ secrets.CODESPACE_NAME }}
@@ -208,52 +196,35 @@ jobs:
 
           if [ -z "$RESOLVED" ]; then
             echo "❌ Impossible de trouver un Codespace actif."
-            echo "  • Vérifie que GH_TOKEN a le scope 'codespace'"
-            echo "  • Vérifie que le Codespace est actif sur https://github.com/codespaces"
             exit 1
           fi
 
           echo "✅ Codespace cible : $RESOLVED"
-          export GH_TOKEN=$GH_TOKEN
 
-          # ── Étape 2 : copie des JARs ───────────────────────────────────────
-          mapfile -t JARS < <(find jars/ -name "*.jar" | sort)
+          # ── Étape 2 : build + démarrage DANS le Codespace via API exec ─────
+          # L'API /api/v1/exec envoie une commande shell au Codespace
+          # sans SSH. Le Codespace fait lui-même le git pull et le build.
+          EXEC_URL="https://api.github.com/user/codespaces/$RESOLVED/api/v1/exec"
 
-          if [ ${#JARS[@]} -eq 0 ]; then
-            echo "❌ Aucun JAR trouvé dans jars/"
+          DEPLOY_CMD='cd /workspaces/spring-petclinic-microservices && git pull origin main && pkill -f "\.jar" 2>/dev/null || true && ./mvnw package -DskipTests -q && JAR=$(find . -name "*.jar" -not -path "*/.m2/*" -not -name "*sources*" -not -name "*javadoc*" | head -1) && echo "JAR: $JAR" && nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 & sleep 3 && pgrep -f jar && echo STARTED'
+
+          HTTP_STATUS=$(curl -s -o /tmp/exec_response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d "{\"command\":[\"bash\",\"-c\",\"$DEPLOY_CMD\"]}" \
+            "$EXEC_URL")
+
+          echo "API exec HTTP status: $HTTP_STATUS"
+          cat /tmp/exec_response.json
+
+          if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "201" ]; then
+            echo "❌ Echec API exec (HTTP $HTTP_STATUS)"
             exit 1
           fi
 
-          for jar in "${JARS[@]}"; do
-            BASENAME=$(basename "$jar")
-            echo "📦 Copie : $jar → remote:/workspaces/$BASENAME"
-            gh codespace cp "$jar" "remote:/workspaces/$BASENAME" --codespace "$RESOLVED"
-          done
-
-          echo "✅ Tous les JARs copiés."
-
-          # ── Étape 3 : démarrage de l'application ──────────────────────────
-          gh codespace ssh --codespace "$RESOLVED" -- bash -s << 'ENDSSH'
-            echo "🔄 Arrêt application existante..."
-            pkill -f "\.jar" 2>/dev/null || true
-            sleep 2
-            JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
-            if [ -z "$JAR" ]; then
-              echo "❌ Aucun JAR dans /workspaces/"
-              exit 1
-            fi
-            echo "🚀 Démarrage : $JAR"
-            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
-            sleep 3
-            if pgrep -f "\.jar" > /dev/null; then
-              echo "✅ Application démarrée"
-            else
-              echo "❌ Echec. Log :"
-              tail -30 /tmp/app.log
-              exit 1
-            fi
-          ENDSSH
-
+          echo "✅ Déploiement lancé dans le Codespace."
           echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
       - name: Verification que l appli repond
