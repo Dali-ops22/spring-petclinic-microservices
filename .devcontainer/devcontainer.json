@@ -14,6 +14,7 @@
       "version": "latest"
     }
   },
+  "postStartCommand": "/usr/sbin/sshd -D &",
   "customizations": {
     "vscode": {
       "settings": {
