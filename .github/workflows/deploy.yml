@@ -10,63 +10,57 @@ env:
   MAVEN_OPTS: -Dmaven.repo.local=~/.m2/repository
 
 jobs:
-  # =========================
-  # 1. BUILD
-  # =========================
+  # ─────────────────────────────────────────────
+  # 1. COMPILATION
+  # ─────────────────────────────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
-
-      - name: Compilation de tous les modules
+      - name: Compilation
         run: |
           ./mvnw compile \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end --show-version \
             -Djava.awt.headless=true
 
-  # =========================
-  # 2. TEST
-  # =========================
+  # ─────────────────────────────────────────────
+  # 2. TESTS UNITAIRES
+  # ─────────────────────────────────────────────
   test:
     name: Tests unitaires
     runs-on: ubuntu-latest
     needs: build
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
-
       - name: Execution des tests
         run: |
           ./mvnw test \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end --show-version \
             -Djava.awt.headless=true
-
       - name: Rapport de tests
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-results
-          # ✅ Multi-modules : rapports dans chaque sous-dossier
           path: '**/target/surefire-reports/'
           retention-days: 7
 
-  # =========================
-  # 3. CODE QUALITY
-  # =========================
+  # ─────────────────────────────────────────────
+  # 3. QUALITE DU CODE
+  # ─────────────────────────────────────────────
   quality:
     name: Qualite du code
     runs-on: ubuntu-latest
@@ -74,7 +68,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
       - name: Analyse CodeClimate
         run: |
           mkdir -p codequality-results
@@ -84,7 +77,6 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v /tmp/cc:/tmp/cc \
             codeclimate/codeclimate analyze -f html > codequality-results/index.html
-
       - name: Rapport qualite
         uses: actions/upload-artifact@v4
         if: always()
@@ -93,46 +85,38 @@ jobs:
           path: codequality-results/
           retention-days: 7
 
-  # =========================
-  # 4. PACKAGE
-  # ✅ CORRIGÉ: projet multi-modules — les JARs sont dans */target/
-  # =========================
+  # ─────────────────────────────────────────────
+  # 4. PACKAGING DES JARs
+  # ─────────────────────────────────────────────
   package:
     name: Package JARs
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
-
       - name: Build de tous les modules
         run: |
           ./mvnw package -DskipTests \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end
-
-      # ✅ Vérification que des JARs ont bien été produits avant l'upload
       - name: Verification des JARs produits
         run: |
           echo "JARs trouves:"
-          find . -path ./node_modules -prune -o -name "*.jar" \
+          find . -name "*.jar" \
             -not -path "*/.m2/*" \
             -not -name "*sources*" \
-            -not -name "*javadoc*" \
-            -print
-          JAR_COUNT=$(find . -name "*.jar" \
+            -not -name "*javadoc*"
+          COUNT=$(find . -name "*.jar" \
             -not -path "*/.m2/*" \
             -not -name "*sources*" \
             -not -name "*javadoc*" | wc -l)
-          echo "Nombre de JARs: $JAR_COUNT"
-          [ "$JAR_COUNT" -gt 0 ] || (echo "Aucun JAR produit!" && exit 1)
-
-      # ✅ CORRIGÉ: ** pour chercher dans tous les sous-dossiers
+          echo "Total: $COUNT JAR(s)"
+          [ "$COUNT" -gt 0 ] || (echo "Aucun JAR produit" && exit 1)
       - name: Upload artifact app-jars
         uses: actions/upload-artifact@v4
         with:
@@ -145,18 +129,16 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # =========================
-  # 5. SECURITY — Trivy
-  # ✅ Scan du code source, pas besoin des JARs
-  # =========================
+  # ─────────────────────────────────────────────
+  # 5. SCAN DE SECURITE
+  # ─────────────────────────────────────────────
   security:
-    name: Scan de securite (Trivy)
+    name: Scan de securite Trivy
     runs-on: ubuntu-latest
     needs: package
     steps:
       - uses: actions/checkout@v4
-
-      - name: Scan Trivy — CRITICAL et HIGH
+      - name: Scan Trivy CRITICAL et HIGH
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -164,7 +146,6 @@ jobs:
           format: 'table'
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
-
       - name: Rapport Trivy JSON
         uses: aquasecurity/trivy-action@master
         if: always()
@@ -175,7 +156,6 @@ jobs:
           output: 'trivy-report.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
           exit-code: '0'
-
       - name: Upload rapport securite
         uses: actions/upload-artifact@v4
         if: always()
@@ -184,12 +164,15 @@ jobs:
           path: trivy-report.json
           retention-days: 30
 
-  # =========================
-  # 6. DEPLOY STAGING — Codespaces
-  # ✅ CORRIGÉ: télécharge app-jars (multi-modules)
-  # =========================
+  # ─────────────────────────────────────────────
+  # 6. DEPLOIEMENT STAGING
+  # CORRECTIF : suppression du check anticipé qui
+  # bloquait la détection automatique du Codespace.
+  # La résolution se fait désormais en une seule
+  # étape : secret → API GitHub → erreur explicite.
+  # ─────────────────────────────────────────────
   deploy_staging:
-    name: Deploy Staging (Codespaces)
+    name: Deploy Staging Codespaces
     runs-on: ubuntu-latest
     needs: package
     environment:
@@ -204,75 +187,117 @@ jobs:
           name: app-jars
           path: jars/
 
-      # ✅ Affiche l'arborescence des JARs téléchargés pour debug
-      - name: Verification des JARs telecharges
-        run: |
-          echo "JARs disponibles:"
-          find jars/ -name "*.jar" | sort
+      - name: Liste des JARs telecharges
+        run: find jars/ -name "*.jar" | sort
 
       - name: Deploiement sur Codespaces
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
+          CS_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
-          # ✅ CORRIGÉ: vérification que CODESPACE_NAME est bien défini
-          if [ -z "$CODESPACE_NAME" ]; then
-            echo "ERREUR: CODESPACE_NAME est vide. Verifie le secret dans Settings > Secrets."
+          # ── Étape 1 : résolution du nom du Codespace ──────────────────────
+          # Priorité 1 : secret CODESPACE_NAME
+          # Priorité 2 : détection automatique via l'API GitHub
+          # Priorité 3 : échec avec message d'aide clair
+          RESOLVED="$CS_NAME"
+
+          if [ -z "$RESOLVED" ]; then
+            echo "⚠️  Secret CODESPACE_NAME vide — tentative de détection automatique..."
+            RESOLVED=$(curl -sf \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/codespaces" \
+              | grep -o '"name":"[^"]*"' \
+              | head -1 \
+              | cut -d'"' -f4)
+          fi
+
+          if [ -z "$RESOLVED" ]; then
+            echo "──────────────────────────────────────────────────"
+            echo "❌ ERREUR : impossible de trouver un Codespace."
+            echo ""
+            echo "Causes possibles :"
+            echo "  • Aucun Codespace actif sur votre compte"
+            echo "  • GH_TOKEN manque le scope 'codespace'"
+            echo ""
+            echo "Pour corriger :"
+            echo "  1. Ouvre https://github.com/codespaces"
+            echo "  2. Copie le nom exact de ton Codespace"
+            echo "     (ex: dali-ops22-spring-petclinic-abc123)"
+            echo "  3. Settings > Secrets and variables > Actions"
+            echo "     > New repository secret"
+            echo "     Nom   : CODESPACE_NAME"
+            echo "     Valeur: le nom copié"
+            echo "  4. Vérifie que GH_TOKEN a bien le scope 'codespace'"
+            echo "──────────────────────────────────────────────────"
             exit 1
           fi
-          echo "Deploiement sur le Codespace: $CODESPACE_NAME"
 
-          # ✅ CORRIGÉ: copie JAR par JAR avec le nom explicitement passé
-          #    (while subshell ne voit pas les variables du parent — on utilise
-          #     une boucle for sur un tableau à la place)
-          JARS=( $(find jars/ -name "*.jar" | sort) )
+          echo "✅ Codespace cible : $RESOLVED"
+
+          # ── Étape 2 : copie des JARs ───────────────────────────────────────
+          mapfile -t JARS < <(find jars/ -name "*.jar" | sort)
 
           if [ ${#JARS[@]} -eq 0 ]; then
-            echo "Aucun JAR trouve dans jars/"
+            echo "❌ Aucun JAR trouvé dans jars/"
             exit 1
           fi
 
           for jar in "${JARS[@]}"; do
-            echo "Copie de $jar -> Codespace $CODESPACE_NAME..."
-            gh codespace cp "$jar" "remote:/workspaces/$(basename $jar)" \
-              --codespace "$CODESPACE_NAME"
+            DEST="remote:/workspaces/$(basename "$jar")"
+            echo "📦 Copie : $jar → $DEST"
+            gh codespace cp "$jar" "$DEST" --codespace "$RESOLVED"
           done
 
-          echo "Tous les JARs copies. Demarrage de l application..."
+          echo "✅ Tous les JARs copiés."
 
-          # Redémarre le service principal
-          gh codespace ssh --codespace "$CODESPACE_NAME" -- "
-            pkill -f '\.jar' || true
+          # ── Étape 3 : démarrage de l'application ──────────────────────────
+          gh codespace ssh --codespace "$RESOLVED" -- '
+            echo "Arrêt de l application existante..."
+            pkill -f "\.jar" || true
             sleep 2
-            JAR=\$(ls /workspaces/*.jar 2>/dev/null | head -1)
-            if [ -z \"\$JAR\" ]; then
-              echo 'Aucun JAR dans /workspaces/'
+
+            JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
+            if [ -z "$JAR" ]; then
+              echo "Aucun JAR dans /workspaces/"
               exit 1
             fi
-            echo \"Demarrage de \$JAR\"
-            nohup java -jar \"\$JAR\" --server.port=8080 > /tmp/app.log 2>&1 &
-            sleep 1
-            echo 'Application demarree'
-          "
+
+            echo "Démarrage : $JAR"
+            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+            sleep 2
+
+            if pgrep -f "\.jar" > /dev/null; then
+              echo "✅ Application démarrée (PID: $(pgrep -f '\.jar'))"
+            else
+              echo "❌ Echec du démarrage. Dernières lignes du log :"
+              tail -20 /tmp/app.log
+              exit 1
+            fi
+          '
+
+          # Rendre le nom disponible aux steps suivants
+          echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
       - name: Verification que l appli repond
-        env:
-          CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
-          URL="https://$CODESPACE_NAME-8080.app.github.dev"
-          echo "Attente de $URL..."
+          URL="https://${RESOLVED_CS}-8080.app.github.dev"
+          echo "🔍 Test de disponibilité : $URL"
           for i in $(seq 1 30); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
-            [ "$STATUS" = "200" ] && echo "OK apres $i tentatives" && exit 0
-            echo "Tentative $i/30 -- HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Application disponible après $i tentative(s) — HTTP $STATUS"
+              exit 0
+            fi
+            echo "  Tentative $i/30 — HTTP $STATUS (attente 5s...)"
             sleep 5
           done
-          echo "Timeout: application non disponible"
+          echo "❌ Timeout : l'application ne répond pas après 150 secondes"
           exit 1
 
-  # =========================
-  # 7. PERFORMANCE
-  # =========================
+  # ─────────────────────────────────────────────
+  # 7. TESTS DE PERFORMANCE
+  # ─────────────────────────────────────────────
   performance:
     name: Tests de performance
     runs-on: ubuntu-latest
@@ -280,27 +305,22 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
       - name: Installation des outils
         run: sudo apt-get install -y wget curl
-
       - name: Tests Sitespeed.io
         env:
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
           URL="https://$CODESPACE_NAME-8080.app.github.dev"
           mkdir -p gitlab-exporter sitespeed-results
-
           wget -q -O ./gitlab-exporter/index.js \
             https://gitlab.com/gitlab-org/gl-performance/raw/master/index.js
-
           docker run --shm-size=1g --rm \
             -v "$(pwd)":/sitespeed.io \
             sitespeedio/sitespeed.io \
             --plugins.add ./gitlab-exporter \
             --outputFolder sitespeed-results \
             "$URL"
-
       - name: Rapport performance
         uses: actions/upload-artifact@v4
         if: always()
@@ -309,10 +329,9 @@ jobs:
           path: sitespeed-results/
           retention-days: 7
 
-  # =========================
-  # 8. DEPLOY PROD
-  # ✅ Rebuild propre pour la production
-  # =========================
+  # ─────────────────────────────────────────────
+  # 8. DEPLOIEMENT PRODUCTION
+  # ─────────────────────────────────────────────
   deploy_prod:
     name: Deploy Production
     runs-on: ubuntu-latest
@@ -322,25 +341,20 @@ jobs:
       url: https://votre-domaine-prod.com
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
-
       - name: Build prod
         run: |
           ./mvnw package -DskipTests \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end
-
-      - name: JARs produits pour la prod
-        run: find . -name "*.jar" -not -path "*/.m2/*" | sort
-
       - name: Deploy en production
         run: |
-          echo "Deploiement en production du commit ${{ github.sha }}"
-          # Remplace par ta vraie commande prod:
+          echo "🚀 Déploiement en production du commit ${{ github.sha }}"
+          find . -name "*.jar" -not -path "*/.m2/*" | sort
+          # Remplace par ta vraie commande prod :
           # scp */target/*.jar user@prod-server:/app/
           # kubectl set image deployment/app app=image:${{ github.sha }}
