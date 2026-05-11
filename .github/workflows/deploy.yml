@@ -150,6 +150,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
+  # Script encodé en base64 pour éviter SCP/SSH
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -162,7 +163,7 @@ jobs:
 
       - name: Installation GitHub CLI
         run: |
-          type gh >/dev/null 2>&1 && echo "gh déjà installé" && gh --version && exit 0
+          type gh >/dev/null 2>&1 && echo "gh deja installe" && gh --version && exit 0
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
             | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
           echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
@@ -178,7 +179,7 @@ jobs:
         run: |
           RESOLVED="$CS_NAME"
           if [ -z "$RESOLVED" ]; then
-            echo "Détection automatique du Codespace..."
+            echo "Detection automatique du Codespace..."
             RESOLVED=$(curl -sf \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
@@ -192,50 +193,46 @@ jobs:
           echo "Codespace cible : $RESOLVED"
           echo "name=$RESOLVED" >> "$GITHUB_OUTPUT"
 
-      - name: Creation du script de deploiement
-        run: |
-          printf '%s\n' \
-            '#!/bin/bash' \
-            'set -e' \
-            'cd /workspaces/spring-petclinic-microservices' \
-            'echo "Git pull..."' \
-            'git pull origin main' \
-            'echo "Build Maven..."' \
-            './mvnw package -DskipTests -q' \
-            'pkill -f "\.jar" 2>/dev/null || true' \
-            'sleep 2' \
-            'JAR=$(find . -name "*.jar" -not -path "*/.m2/*" -not -name "*sources*" -not -name "*javadoc*" | head -1)' \
-            'if [ -z "$JAR" ]; then echo "Aucun JAR trouvé" && exit 1; fi' \
-            'echo "Démarrage : $JAR"' \
-            'nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &' \
-            'sleep 5' \
-            'pgrep -f "\.jar" > /dev/null && echo "Application demarree" || (tail -30 /tmp/app.log && exit 1)' \
-            > /tmp/deploy_remote.sh
-          chmod +x /tmp/deploy_remote.sh
-
       - name: Deploiement sur Codespaces
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           RESOLVED: ${{ steps.resolve.outputs.name }}
         run: |
           export GH_TOKEN=$GH_TOKEN
-          gh codespace cp /tmp/deploy_remote.sh "remote:/tmp/deploy_remote.sh" --codespace "$RESOLVED"
-          gh codespace exec --codespace "$RESOLVED" -- bash /tmp/deploy_remote.sh
+
+          # Encode le script en base64 pour l'envoyer sans SCP
+          SCRIPT=$(printf '%s\n' \
+            'set -e' \
+            'cd /workspaces/spring-petclinic-microservices' \
+            'git pull origin main' \
+            './mvnw package -DskipTests -q' \
+            'pkill -f "\.jar" 2>/dev/null || true' \
+            'sleep 2' \
+            'JAR=$(find . -name "*.jar" -not -path "*/.m2/*" -not -name "*sources*" -not -name "*javadoc*" | head -1)' \
+            '[ -z "$JAR" ] && echo "Aucun JAR trouve" && exit 1' \
+            'echo "Demarrage : $JAR"' \
+            'nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &' \
+            'sleep 5' \
+            'pgrep -f "\.jar" && echo "Application demarree OK" || (tail -20 /tmp/app.log && exit 1)' \
+            | base64 -w 0)
+
+          echo "Envoi du script via gh codespace exec..."
+          gh codespace exec --codespace "$RESOLVED" -- bash -c "echo $SCRIPT | base64 -d | bash"
 
       - name: Verification que l appli repond
         run: |
           URL="https://${{ steps.resolve.outputs.name }}-8080.app.github.dev"
-          echo "Test de disponibilité : $URL"
+          echo "Test de disponibilite : $URL"
           for i in $(seq 1 30); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
             if [ "$STATUS" = "200" ]; then
-              echo "Application disponible après $i tentative(s) — HTTP $STATUS"
+              echo "Application disponible apres $i tentative(s) - HTTP $STATUS"
               exit 0
             fi
-            echo "Tentative $i/30 — HTTP $STATUS (attente 5s...)"
+            echo "Tentative $i/30 - HTTP $STATUS (attente 5s...)"
             sleep 5
           done
-          echo "Timeout : l'application ne répond pas après 150 secondes"
+          echo "Timeout : l'application ne repond pas apres 150 secondes"
           exit 1
 
   # ─────────────────────────────────────────────
@@ -296,5 +293,8 @@ jobs:
             --batch-mode --errors --fail-at-end
       - name: Deploy en production
         run: |
-          echo "Déploiement en production du commit ${{ github.sha }}"
-          find . -name "*.jar" -not -path "*/.m2/*" | sortha }}
+          echo "Deploiement en production du commit ${{ github.sha }}"
+          find . -name "*.jar" -not -path "*/.m2/*" | sort
+          # Remplace par ta vraie commande prod :
+          # scp */target/*.jar user@prod-server:/app/
+          # kubectl set image deployment/app app=image:${{ github.sha }}
