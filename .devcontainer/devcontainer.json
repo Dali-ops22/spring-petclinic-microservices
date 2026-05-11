@@ -1,34 +1,24 @@
 {
   "name": "Spring Petclinic Microservices",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
+  "image": "mcr.microsoft.com/devcontainers/java:17-bullseye",
   "features": {
-    "ghcr.io/devcontainers/features/java:1": {
-      "installMaven": "true",
-      "version": "17" 
-    },
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
-        "version": "latest",
-        "enableNonRootDocker": "true"
+      "version": "latest",
+      "enableNonRootDocker": "true"
     },
-    "ghcr.io/devcontainers/features/azure-cli:1": {}
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "17",
+      "installMaven": "true"
+    }
   },
   "customizations": {
     "vscode": {
-      "settings": {
-        "java.server.launchMode": "Standard"
-      },
       "extensions": [
         "vscjava.vscode-java-pack",
-        "vscjava.vscode-maven",
         "vmware.vscode-boot-dev-pack",
-        "redhat.vscode-xml",
-        "mhutchie.git-graph"
+        "ms-azuretools.vscode-docker"
       ]
     }
   },
-  "forwardPorts": [8080, 8888, 8761, 9090],
-  "postCreateCommand": "mvn clean install -DskipTests",
   "remoteUser": "vscode"
 }
