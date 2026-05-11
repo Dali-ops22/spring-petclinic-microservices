@@ -215,15 +215,33 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
-          # Copie tous les JARs dans le Codespace
-          find jars/ -name "*.jar" | while read jar; do
-            echo "Copie de $jar..."
-            gh codespace cp "$jar" remote:/workspaces/ -c $CODESPACE_NAME
+          # ✅ CORRIGÉ: vérification que CODESPACE_NAME est bien défini
+          if [ -z "$CODESPACE_NAME" ]; then
+            echo "ERREUR: CODESPACE_NAME est vide. Verifie le secret dans Settings > Secrets."
+            exit 1
+          fi
+          echo "Deploiement sur le Codespace: $CODESPACE_NAME"
+
+          # ✅ CORRIGÉ: copie JAR par JAR avec le nom explicitement passé
+          #    (while subshell ne voit pas les variables du parent — on utilise
+          #     une boucle for sur un tableau à la place)
+          JARS=( $(find jars/ -name "*.jar" | sort) )
+
+          if [ ${#JARS[@]} -eq 0 ]; then
+            echo "Aucun JAR trouve dans jars/"
+            exit 1
+          fi
+
+          for jar in "${JARS[@]}"; do
+            echo "Copie de $jar -> Codespace $CODESPACE_NAME..."
+            gh codespace cp "$jar" "remote:/workspaces/$(basename $jar)" \
+              --codespace "$CODESPACE_NAME"
           done
 
-          # Redémarre le service principal (api-gateway par défaut)
-          # Adapte le nom du JAR à ton microservice principal
-          gh codespace ssh -c $CODESPACE_NAME -- "
+          echo "Tous les JARs copies. Demarrage de l application..."
+
+          # Redémarre le service principal
+          gh codespace ssh --codespace "$CODESPACE_NAME" -- "
             pkill -f '\.jar' || true
             sleep 2
             JAR=\$(ls /workspaces/*.jar 2>/dev/null | head -1)
@@ -233,6 +251,7 @@ jobs:
             fi
             echo \"Demarrage de \$JAR\"
             nohup java -jar \"\$JAR\" --server.port=8080 > /tmp/app.log 2>&1 &
+            sleep 1
             echo 'Application demarree'
           "
 
