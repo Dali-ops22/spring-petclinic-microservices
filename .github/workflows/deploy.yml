@@ -112,27 +112,6 @@ jobs:
             -not -name "*javadoc*" | wc -l)
           echo "Total: $COUNT JAR(s)"
           [ "$COUNT" -gt 0 ] || (echo "Aucun JAR produit" && exit 1)
-      - name: Collecte des JARs dans jars/
-        run: |
-          mkdir -p jars
-          find . -name "*.jar" \
-            -not -path "*/.m2/*" \
-            -not -name "*sources*" \
-            -not -name "*javadoc*" \
-            | while read jar; do
-                MODULE=$(echo "$jar" | cut -d'/' -f2)
-                mkdir -p "jars/$MODULE/target"
-                cp "$jar" "jars/$MODULE/target/"
-              done
-          echo "JARs collectés :"
-          find jars/ -name "*.jar"
-      - name: Upload artifact app-jars
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-jars
-          path: jars/
-          retention-days: 1
-          if-no-files-found: error
 
   # ─────────────────────────────────────────────
   # 5. SCAN DE SECURITE
@@ -171,6 +150,8 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. DEPLOIEMENT STAGING
+  # Le Codespace fait lui-même : git pull + mvn package + java -jar
+  # via gh codespace exec (pas besoin de copier les JARs)
   # ─────────────────────────────────────────────
   deploy_staging:
     name: Deploy Staging Codespaces
@@ -178,15 +159,8 @@ jobs:
     needs: package
     environment:
       name: staging
-      url: https://${{ vars.CODESPACE_URL }}-8080.app.github.dev
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download artifact app-jars
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jars
-          path: jars/
 
       - name: Installation GitHub CLI
         run: |
@@ -223,43 +197,36 @@ jobs:
           echo "✅ Codespace cible : $RESOLVED"
           export GH_TOKEN=$GH_TOKEN
 
-          # ── Étape 2 : copie des JARs ─────────────────────────────────────
-          mapfile -t JARS < <(find jars/ -name "*.jar" | sort)
-          if [ ${#JARS[@]} -eq 0 ]; then
-            echo "❌ Aucun JAR trouvé dans jars/"
-            exit 1
-          fi
-
-          for jar in "${JARS[@]}"; do
-            BASENAME=$(basename "$jar")
-            echo "📦 Copie : $jar → remote:/workspaces/$BASENAME"
-            gh codespace cp "$jar" "remote:/workspaces/$BASENAME" --codespace "$RESOLVED"
-          done
-
-          # ── Étape 3 : script de démarrage ────────────────────────────────
-          cat > /tmp/start.sh << 'SCRIPT'
-          #!/bin/bash
-          pkill -f "\.jar" 2>/dev/null || true
-          sleep 2
-          JAR=$(ls /workspaces/*.jar 2>/dev/null | head -1)
-          if [ -z "$JAR" ]; then
-            echo "❌ Aucun JAR trouvé dans /workspaces/"
-            exit 1
-          fi
-          echo "🚀 Démarrage : $JAR"
-          nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
-          sleep 5
-          if pgrep -f "\.jar" > /dev/null; then
-            echo "✅ Application démarrée avec succès"
-          else
-            echo "❌ Echec du démarrage"
-            tail -30 /tmp/app.log
-            exit 1
-          fi
-          SCRIPT
-
-          gh codespace cp /tmp/start.sh "remote:/tmp/start.sh" --codespace "$RESOLVED"
-          gh codespace exec --codespace "$RESOLVED" -- bash /tmp/start.sh
+          # ── Étape 2 : build + démarrage dans le Codespace ────────────────
+          gh codespace exec --codespace "$RESOLVED" -- bash << 'ENDSSH'
+            set -e
+            cd /workspaces/spring-petclinic-microservices
+            echo "📥 Git pull..."
+            git pull origin main
+            echo "🔨 Build Maven (sans tests)..."
+            ./mvnw package -DskipTests -q
+            echo "🛑 Arrêt ancienne instance..."
+            pkill -f "\.jar" 2>/dev/null || true
+            sleep 2
+            JAR=$(find . -name "*.jar" \
+              -not -path "*/.m2/*" \
+              -not -name "*sources*" \
+              -not -name "*javadoc*" | head -1)
+            if [ -z "$JAR" ]; then
+              echo "❌ Aucun JAR trouvé"
+              exit 1
+            fi
+            echo "🚀 Démarrage : $JAR"
+            nohup java -jar "$JAR" --server.port=8080 > /tmp/app.log 2>&1 &
+            sleep 5
+            if pgrep -f "\.jar" > /dev/null; then
+              echo "✅ Application démarrée avec succès"
+            else
+              echo "❌ Echec du démarrage"
+              tail -30 /tmp/app.log
+              exit 1
+            fi
+ENDSSH
 
           echo "RESOLVED_CS=$RESOLVED" >> "$GITHUB_ENV"
 
