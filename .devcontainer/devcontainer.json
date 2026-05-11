@@ -3,9 +3,8 @@
   "image": "mcr.microsoft.com/devcontainers/java:17-bullseye",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
-  "version": "latest",
-  "enableNonRootDocker": "true"
-},
+      "version": "latest",
+      "enableNonRootDocker": "true"
     },
     "ghcr.io/devcontainers/features/java:1": {
       "version": "17",
@@ -26,30 +25,5 @@
   },
   "postStartCommand": "sudo service ssh start || sudo /usr/sbin/sshd",
   "remoteUser": "vscode",
-  "forwardPorts": [8080, 8761, 8888, 9411],
-  "portsAttributes": {
-    "8080": {
-      "label": "PetClinic Web UI",
-      "onAutoForward": "notify"
-    },
-    "8761": {
-      "label": "Eureka Dashboard",
-      "onAutoForward": "notify"
-    },
-    "8888": {
-      "label": "Config Server",
-      "onAutoForward": "silent"
-    },
-    "9411": {
-      "label": "Zipkin Tracing",
-      "onAutoForward": "silent"
-    }
-  },
-  "postCreateCommand": "sudo chown -R vscode:vscode /workspaces && chmod +x mvnw",
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ],
-  "containerEnv": {
-    "DOCKER_HOST": "unix:///var/run/docker.sock"
-  }
+  "forwardPorts": [8080, 8888, 8761, 3000, 9411]
 }
