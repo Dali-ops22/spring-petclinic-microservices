@@ -25,7 +25,7 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Compilation
+      - name: Compilation de tous les modules
         run: |
           ./mvnw compile \
             -Dhttps.protocols=TLSv1.2 \
@@ -60,11 +60,12 @@ jobs:
         if: always()
         with:
           name: test-results
-          path: target/surefire-reports/
+          # ✅ Multi-modules : rapports dans chaque sous-dossier
+          path: '**/target/surefire-reports/'
           retention-days: 7
 
   # =========================
-  # 3. CODE QUALITY  (parallèle avec package)
+  # 3. CODE QUALITY
   # =========================
   quality:
     name: Qualite du code
@@ -94,9 +95,10 @@ jobs:
 
   # =========================
   # 4. PACKAGE
+  # ✅ CORRIGÉ: projet multi-modules — les JARs sont dans */target/
   # =========================
   package:
-    name: Package JAR
+    name: Package JARs
     runs-on: ubuntu-latest
     needs: test
     steps:
@@ -108,23 +110,44 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Creation du JAR
+      - name: Build de tous les modules
         run: |
           ./mvnw package -DskipTests \
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end
 
-      - name: Upload artifact app-jar
+      # ✅ Vérification que des JARs ont bien été produits avant l'upload
+      - name: Verification des JARs produits
+        run: |
+          echo "JARs trouves:"
+          find . -path ./node_modules -prune -o -name "*.jar" \
+            -not -path "*/.m2/*" \
+            -not -name "*sources*" \
+            -not -name "*javadoc*" \
+            -print
+          JAR_COUNT=$(find . -name "*.jar" \
+            -not -path "*/.m2/*" \
+            -not -name "*sources*" \
+            -not -name "*javadoc*" | wc -l)
+          echo "Nombre de JARs: $JAR_COUNT"
+          [ "$JAR_COUNT" -gt 0 ] || (echo "Aucun JAR produit!" && exit 1)
+
+      # ✅ CORRIGÉ: ** pour chercher dans tous les sous-dossiers
+      - name: Upload artifact app-jars
         uses: actions/upload-artifact@v4
         with:
-          name: app-jar
-          path: target/*.jar
+          name: app-jars
+          path: |
+            **/target/*.jar
+            !**/target/*sources*.jar
+            !**/target/*javadoc*.jar
+            !**/.m2/**
           retention-days: 1
           if-no-files-found: error
 
   # =========================
   # 5. SECURITY — Trivy
-  # ✅ CORRIGÉ: scan filesystem via pom.xml, pas besoin du JAR
+  # ✅ Scan du code source, pas besoin des JARs
   # =========================
   security:
     name: Scan de securite (Trivy)
@@ -163,7 +186,7 @@ jobs:
 
   # =========================
   # 6. DEPLOY STAGING — Codespaces
-  # ✅ needs: package garantit que app-jar existe
+  # ✅ CORRIGÉ: télécharge app-jars (multi-modules)
   # =========================
   deploy_staging:
     name: Deploy Staging (Codespaces)
@@ -175,35 +198,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Telechargement du JAR
+      - name: Telechargement des JARs
         uses: actions/download-artifact@v4
         with:
-          name: app-jar
-          path: target/
+          name: app-jars
+          path: jars/
 
-      - name: Verification du JAR
-        run: ls -lh target/*.jar
+      # ✅ Affiche l'arborescence des JARs téléchargés pour debug
+      - name: Verification des JARs telecharges
+        run: |
+          echo "JARs disponibles:"
+          find jars/ -name "*.jar" | sort
 
       - name: Deploiement sur Codespaces
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
-          gh codespace cp target/*.jar remote:/workspaces/ -c $CODESPACE_NAME
+          # Copie tous les JARs dans le Codespace
+          find jars/ -name "*.jar" | while read jar; do
+            echo "Copie de $jar..."
+            gh codespace cp "$jar" remote:/workspaces/ -c $CODESPACE_NAME
+          done
 
-          gh codespace ssh -c $CODESPACE_NAME -- \
-            "pkill -f '\.jar' || true && \
-             sleep 2 && \
-             nohup java -jar /workspaces/*.jar \
-               --server.port=8080 > /tmp/app.log 2>&1 &"
-
-          echo "Application demarree sur $CODESPACE_NAME"
+          # Redémarre le service principal (api-gateway par défaut)
+          # Adapte le nom du JAR à ton microservice principal
+          gh codespace ssh -c $CODESPACE_NAME -- "
+            pkill -f '\.jar' || true
+            sleep 2
+            JAR=\$(ls /workspaces/*.jar 2>/dev/null | head -1)
+            if [ -z \"\$JAR\" ]; then
+              echo 'Aucun JAR dans /workspaces/'
+              exit 1
+            fi
+            echo \"Demarrage de \$JAR\"
+            nohup java -jar \"\$JAR\" --server.port=8080 > /tmp/app.log 2>&1 &
+            echo 'Application demarree'
+          "
 
       - name: Verification que l appli repond
         env:
           CODESPACE_NAME: ${{ secrets.CODESPACE_NAME }}
         run: |
           URL="https://$CODESPACE_NAME-8080.app.github.dev"
+          echo "Attente de $URL..."
           for i in $(seq 1 30); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
             [ "$STATUS" = "200" ] && echo "OK apres $i tentatives" && exit 0
@@ -254,7 +292,7 @@ jobs:
 
   # =========================
   # 8. DEPLOY PROD
-  # ✅ CORRIGÉ: rebuild local, pas de download d'artifact
+  # ✅ Rebuild propre pour la production
   # =========================
   deploy_prod:
     name: Deploy Production
@@ -278,10 +316,12 @@ jobs:
             -Dhttps.protocols=TLSv1.2 \
             --batch-mode --errors --fail-at-end
 
+      - name: JARs produits pour la prod
+        run: find . -name "*.jar" -not -path "*/.m2/*" | sort
+
       - name: Deploy en production
         run: |
           echo "Deploiement en production du commit ${{ github.sha }}"
-          ls -lh target/*.jar
           # Remplace par ta vraie commande prod:
-          # scp target/*.jar user@prod-server:/app/
+          # scp */target/*.jar user@prod-server:/app/
           # kubectl set image deployment/app app=image:${{ github.sha }}
